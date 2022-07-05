@@ -33,7 +33,7 @@ data_dir = "checkpoints"
 dealias = 3/2
 # domain, distributor, and base
 coords = d3.CartesianCoordinates('x', 'y','z')
-dist = d3.Distributor(coords, dtype=np.float64)
+dist = d3.Distributor(coords, dtype=np.float64, mesh = mesh)
 
 
 xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
