@@ -1,7 +1,9 @@
 """2D Hartmann flow example
 Uses vector potential form of MHD; incompressible Navier-Stokes, no further approximations.
+Edits to get a Dedalus3 version made by Carlos and Alex.
+
+reference paper or document needed
 """
-# Edits to get a Dedalus3 version made by Carlos and Alex.
 import os
 import sys
 import numpy as np
@@ -28,23 +30,21 @@ nz = 64
 mesh = [8,8]
 stop_time = 0.2
 data_dir = "checkpoints"
-
+dealias = 3/2
 # domain, distributor, and base
 coords = d3.CartesianCoordinates('x', 'y','z')
 dist = d3.Distributor(coords, dtype=np.float64)
-xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=3/2)
-ybasis = d3.RealFourier(coords['y'], size=ny, bounds=(0, Ly), dealias=3/2)
-zbasis = d3.ChebyshevT(coords['z'], size=nz, bounds=(-Lz, Lz), dealias=3/2) # the coupled dimension
+
+
+xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
+ybasis = d3.RealFourier(coords['y'], size=ny, bounds=(0, Ly), dealias=dealias)
+zbasis = d3.ChebyshevT(coords['z'], size=nz, bounds=(-Lz, Lz), dealias=dealias) # the coupled dimension
 
 # Fields (D3 Update)
 v = dist.VectorField(coords, name='v', bases=(xbasis, ybasis, zbasis))
 A = dist.VectorField(coords, name='A', bases=(xbasis, ybasis, zbasis))
 
 p = dist.Field(name='p', bases=(xbasis, ybasis, zbasis))
-vx_z = dist.Field(name='vx_z', bases=(xbasis, ybasis, zbasis))
-vy_z = dist.Field(name='vy_z', bases=(xbasis, ybasis, zbasis))
-vz_z = dist.Field(name='vz_z', bases=(xbasis, ybasis, zbasis))
-Ay_z = dist.Field(name='Ay_z', bases=(xbasis, ybasis, zbasis))
 t = dist.Field(name='t')
 
 ##### Taus
@@ -56,24 +56,24 @@ tau_v2 = dist.VectorField(coords, name='tau_v2', bases = (xbasis, ybasis))
 tau_a1 = dist.VectorField(coords, name='tau_a1', bases = (xbasis, ybasis))
 tau_a2 = dist.VectorField(coords, name='tau_a2', bases = (xbasis, ybasis))
 
-
-# variables and parameters
-hartmann = d3.IVP([v, A, p, vx_z, vy_z, vz_z, Ay_z], namespace=locals())
-
 #substitutions
 Ha = 20. # change this parameter
 Re = 1.
 Rm = 1.
 Pi = 1.
 tau = 0.1
-
 B = d3.curl(A)
 J = -d3.Laplacian(A)
+
+#Problem
 ex, _, ez = coords.unit_vector_fields(dist)
 lift_basis = zbasis.derivative_basis(2)
 lift = lambda A: d3.Lift(A, lift_basis, -1)
 grad_v = d3.grad(v) + ez*lift(tau_v1) # First-order reduction
 grad_a = d3.grad(A) + ez*lift(tau_a1) # First-order reduction
+
+# variables and parameters
+hartmann = d3.IVP([v, A, p, tau_p1, tau_p2, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals())
 
 # Navier Stokes
 hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form
@@ -87,23 +87,20 @@ hartmann.add_equation("integ(p)= 0")
 hartmann.add_equation("dt(A) - lap(A)/Rm = cross(v, B) + lift(tau_a2)")
 
 # boundary conditions: nonslip at wall, pressure concentrated on the left
-# hartmann.add_equation("v(x = 'left') = 0")
-# hartmann.add_equation("v(x = 'right') = 0", condition ="(nx == 0)")
-# hartmann.add_equation("v(x='left') = 0")
-# hartmann.add_equation("v(x='right') = 0")
-# hartmann.add_equation("v(y='left') = 0")
-# hartmann.add_equation("v(y='right') = 0")
-# hartmann.add_equation("v(z='left') = 0")
-# hartmann.add_equation("v(z='right') = 0", condition = "(nx != 0)")
-# hartmann.add_equation("p(x='right') = 0", condition = "(nx==0)")
-# hartmann.add_equation("A(x = 'left') = 0")
-# hartmann.add_equation("A(x = 'right') = 0")
+hartmann.add_equation("v(x = 'left') = 0")
+hartmann.add_equation("v(x = 'right') = 0", condition ="(nx == 0)")
+#hartmann.add_equation("v(x='left') = 0")
+#hartmann.add_equation("v(x='right') = 0")
+#hartmann.add_equation("v(y='left') = 0")
+#hartmann.add_equation("v(y='right') = 0")
+#hartmann.add_equation("v(z='left') = 0")
+#hartmann.add_equation("v(z='right') = 0", condition = "(nx != 0)")
+hartmann.add_equation("p(x='right') = 0", condition = "(nx==0)")
+hartmann.add_equation("A(x = 'left') = 0")
+#hartmann.add_equation("A(x = 'right') = 0")
 
 # build solver
-solver = hartmann.build_solver(d3.MCNAB2) #changed from de to d3 due to...D3. Besides this tiny timestepper syntax change, nothing from
-                                            #here to the end of the file (i.e. solver and analysis) appears to need editing thus far.
-                                            # only thing of note along that line is the notice on the Dedalus site documentation about
-                                            #virtual folders and automatic merging.
+solver = hartmann.build_solver(d3.MCNAB2)
 logger.info("Solver built")
 
 # Integration parameters
@@ -116,15 +113,13 @@ dt = 1e-3
 
 # Analysis
 analysis_tasks = []
-# check = solver.evaluator.add_file_handler(os.path.join(data_dir,'checkpoints'), wall_dt=3540, max_writes=50)
-# check.add_system(solver.state)
-# analysis_tasks.append(check)
+check = solver.evaluator.add_file_handler(os.path.join(data_dir,'checkpoints'), wall_dt=3540, max_writes=50)
+check.add_system(solver.state)
+analysis_tasks.append(check)
 
 snap = solver.evaluator.add_file_handler('slices', sim_dt=1e-3, max_writes=200)
-# snap.add_task(Ay_z, scales=1)
-# snap.add_task((dx(Ay) + 1), scales=1)
-snap.add_task(A, scales=1)
-snap.add_task(v, scales=1)
+snap.add_task(B, name='bfield')
+snap.add_task(v, name='velocity')
 analysis_tasks.append(snap)
 
 # integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200)
