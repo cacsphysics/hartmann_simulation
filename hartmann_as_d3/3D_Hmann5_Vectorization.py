@@ -33,7 +33,7 @@ data_dir = "checkpoints"
 dealias = 3/2
 # domain, distributor, and base
 coords = d3.CartesianCoordinates('x', 'y','z')
-dist = d3.Distributor(coords, dtype=np.float64, mesh = mesh)
+dist = d3.Distributor(coords, dtype=np.float64)
 
 
 xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
@@ -42,14 +42,15 @@ zbasis = d3.ChebyshevT(coords['z'], size=nz, bounds=(-Lz, Lz), dealias=dealias) 
 
 # Fields (D3 Update)
 v = dist.VectorField(coords, name='v', bases=(xbasis, ybasis, zbasis))
-A = dist.VectorField(coords, name='A', bases=(xbasis, ybasis, zbasis))
 
+Ay = dist.Field(name='Ay', bases=(xbasis, ybasis, zbasis))
 p = dist.Field(name='p', bases=(xbasis, ybasis, zbasis))
 t = dist.Field(name='t')
 
 ##### Taus
 tau_p1 = dist.Field(name='tau_p1', bases = (xbasis, ybasis))
 tau_p2 = dist.Field(name='tau_p2', bases = (xbasis, ybasis))
+tau_v3 = dist.Field(name='tau_v3', bases = (xbasis, ybasis))
 
 tau_v1 = dist.VectorField(coords, name='tau_v1', bases = (xbasis, ybasis))
 tau_v2 = dist.VectorField(coords, name='tau_v2', bases = (xbasis, ybasis))
@@ -57,47 +58,43 @@ tau_a1 = dist.VectorField(coords, name='tau_a1', bases = (xbasis, ybasis))
 tau_a2 = dist.VectorField(coords, name='tau_a2', bases = (xbasis, ybasis))
 
 #substitutions
+ex, ey, ez = coords.unit_vector_fields(dist)
 Ha = 20. # change this parameter
 Re = 1.
 Rm = 1.
 Pi = 1.
 tau = 0.1
-B = d3.curl(A)
-J = -d3.Laplacian(A)
+B = d3.curl(Ay*ey)
+J = -d3.Laplacian(Ay*ey)
 
 #Problem
-ex, _, ez = coords.unit_vector_fields(dist)
 lift_basis = zbasis.derivative_basis(2)
 lift = lambda A: d3.Lift(A, lift_basis, -1)
 grad_v = d3.grad(v) + ez*lift(tau_v1) # First-order reduction
-grad_a = d3.grad(A) + ez*lift(tau_a1) # First-order reduction
+grad_a = d3.grad(Ay*ey) + ez*lift(tau_a1) # First-order reduction
 
 # variables and parameters
-hartmann = d3.IVP([v, A, p, tau_p1, tau_p2, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals())
+hartmann = d3.IVP([v, Ay, p, tau_p1, tau_p2, tau_v1, tau_v2, tau_v3, tau_a1, tau_a2], time=t, namespace=locals()) #19 unknowns
 
 # Navier Stokes
 hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form
 hartmann.add_equation("trace(grad_a) + tau_p2 = 0")
-hartmann.add_equation("dt(v)+ grad(p) - lap(v)/Re = -v@grad(v) - Ha**2/(Re*Rm)*cross(J, B) - Pi*(np.exp(-t/tau)*ex -1) + lift(tau_v2)")
+hartmann.add_equation("dt(v)+ grad(p) - lap(v)/Re = -v@grad_v - ((Ha**2)*cross(J, B))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1) + lift(tau_v2)")
 
 # div(v) = 0, incompressible
 hartmann.add_equation("integ(p)= 0")
+hartmann.add_equation("div(v) + tau_v3 = 0")
 
 # Az Induction Equation
-hartmann.add_equation("dt(A) - lap(A)/Rm = cross(v, B) + lift(tau_a2)")
+hartmann.add_equation("dt(Ay*ey) - lap(Ay*ey)/Rm = cross(v, B) + lift(tau_a2)")
 
 # boundary conditions: nonslip at wall, pressure concentrated on the left
-hartmann.add_equation("v(x = 'left') = 0")
-hartmann.add_equation("v(x = 'right') = 0", condition ="(nx == 0)")
-#hartmann.add_equation("v(x='left') = 0")
-#hartmann.add_equation("v(x='right') = 0")
-#hartmann.add_equation("v(y='left') = 0")
-#hartmann.add_equation("v(y='right') = 0")
-#hartmann.add_equation("v(z='left') = 0")
-#hartmann.add_equation("v(z='right') = 0", condition = "(nx != 0)")
-hartmann.add_equation("p(x='right') = 0", condition = "(nx==0)")
-hartmann.add_equation("A(x = 'left') = 0")
-#hartmann.add_equation("A(x = 'right') = 0")
+hartmann.add_equation("v(z='left') = 0")
+hartmann.add_equation("v(z='right') = 0", condition = "(nx != 0)")
+hartmann.add_equation("p(z=Lz) = 0", condition = "(nx == 0)")
+hartmann.add_equation("Ay(z = 'left') = 0")
+hartmann.add_equation("Ay(z = 'right') = 0")
+# 18 equations
 
 # build solver
 solver = hartmann.build_solver(d3.MCNAB2)
