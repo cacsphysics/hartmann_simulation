@@ -33,7 +33,7 @@ data_dir = "checkpoints"
 dealias = 3/2
 # domain, distributor, and base
 coords = d3.CartesianCoordinates('x', 'y','z')
-dist = d3.Distributor(coords, dtype=np.float64)
+dist = d3.Distributor(coords, dtype=np.float64, mesh = mesh)
 
 
 xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
@@ -42,16 +42,12 @@ zbasis = d3.ChebyshevT(coords['z'], size=nz, bounds=(-Lz, Lz), dealias=dealias) 
 
 # Fields (D3 Update)
 v = dist.VectorField(coords, name='v', bases=(xbasis, ybasis, zbasis))
-
-Ay = dist.Field(name='Ay', bases=(xbasis, ybasis, zbasis))
+a = dist.VectorField(coords, name='a', bases=(xbasis, ybasis, zbasis))
 p = dist.Field(name='p', bases=(xbasis, ybasis, zbasis))
 t = dist.Field(name='t')
 
 ##### Taus
-tau_p1 = dist.Field(name='tau_p1', bases = (xbasis, ybasis))
-tau_p2 = dist.Field(name='tau_p2', bases = (xbasis, ybasis))
-tau_v3 = dist.Field(name='tau_v3', bases = (xbasis, ybasis))
-
+tau_p1 = dist.Field(name='tau_p1')
 tau_v1 = dist.VectorField(coords, name='tau_v1', bases = (xbasis, ybasis))
 tau_v2 = dist.VectorField(coords, name='tau_v2', bases = (xbasis, ybasis))
 tau_a1 = dist.VectorField(coords, name='tau_a1', bases = (xbasis, ybasis))
@@ -64,37 +60,33 @@ Re = 1.
 Rm = 1.
 Pi = 1.
 tau = 0.1
-B = d3.curl(Ay*ey)
-J = -d3.Laplacian(Ay*ey)
+B = d3.curl(a)
+J = -d3.Laplacian(a)
 
 #Problem
 lift_basis = zbasis.derivative_basis(2)
 lift = lambda A: d3.Lift(A, lift_basis, -1)
 grad_v = d3.grad(v) + ez*lift(tau_v1) # First-order reduction
-grad_a = d3.grad(Ay*ey) + ez*lift(tau_a1) # First-order reduction
+grad_a = d3.grad(a) + ez*lift(tau_a1) # First-order reduction
 
+# First-order form: "div(f)" becomes "trace(grad_f)"
+# First-order form: "lap(f)" becomes "div(grad_f)"
 # variables and parameters
-hartmann = d3.IVP([v, Ay, p, tau_p1, tau_p2, tau_v1, tau_v2, tau_v3, tau_a1, tau_a2], time=t, namespace=locals()) #19 unknowns
+hartmann = d3.IVP([v, a, p, tau_p1, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals()) #19 unknowns
 
-# Navier Stokes
-hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form
-hartmann.add_equation("trace(grad_a) + tau_p2 = 0")
-hartmann.add_equation("dt(v)+ grad(p) - lap(v)/Re = -v@grad_v - ((Ha**2)*cross(J, B))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1) + lift(tau_v2)")
-
-# div(v) = 0, incompressible
-hartmann.add_equation("integ(p)= 0")
-hartmann.add_equation("div(v) + tau_v3 = 0")
-
-# Az Induction Equation
-hartmann.add_equation("dt(Ay*ey) - lap(Ay*ey)/Rm = cross(v, B) + lift(tau_a2)")
+hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form - div(v) = 0, incompressible
+hartmann.add_equation("dt(v)+ grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(J, B))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1)") # Navier Stokes
+# hartmann.add_equation("trace(grad_a) = 0") #coulomb gauge - add back tau_p2 if necessary
+hartmann.add_equation("dt(a) - div(grad_a)/Rm + lift(tau_a2) = cross(v, B)") # Az Induction Equation
 
 # boundary conditions: nonslip at wall, pressure concentrated on the left
 hartmann.add_equation("v(z='left') = 0")
-hartmann.add_equation("v(z='right') = 0", condition = "(nx != 0)")
-hartmann.add_equation("p(z=Lz) = 0", condition = "(nx == 0)")
-hartmann.add_equation("Ay(z = 'left') = 0")
-hartmann.add_equation("Ay(z = 'right') = 0")
-# 18 equations
+hartmann.add_equation("v(z='right') = 0") # , condition = "(nx != 0)"
+hartmann.add_equation("a(z = 'left') = 0")
+hartmann.add_equation("a(z = 'right') = 0")
+hartmann.add_equation("integ(p)= 0") # pressure gauge
+# hartmann.add_equation("p(z='right') = 0", condition = "(nx == 0)")
+# 5 BCs, four are vectors
 
 # build solver
 solver = hartmann.build_solver(d3.MCNAB2)
@@ -111,7 +103,7 @@ dt = 1e-3
 # Analysis
 analysis_tasks = []
 check = solver.evaluator.add_file_handler(os.path.join(data_dir,'checkpoints'), wall_dt=3540, max_writes=50)
-check.add_system(solver.state)
+# check.add_system(solver.state)
 analysis_tasks.append(check)
 
 snap = solver.evaluator.add_file_handler('slices', sim_dt=1e-3, max_writes=200)
@@ -126,7 +118,7 @@ analysis_tasks.append(snap)
 
 timeseries = solver.evaluator.add_file_handler('timeseries', sim_dt=1e-2)
 timeseries.add_task(0.5*d3.integ(v@v),name='Ekin')
-timeseries.add_task(0.5*d3.integ(Bx**2 + Bz**2),name='Emag')
+timeseries.add_task(0.5*d3.integ((B*ex)**2 + (B*ez)**2),name='Emag')
 analysis_tasks.append(timeseries)
 
 # Flow properties
@@ -138,7 +130,7 @@ try:
     logger.info('Starting loop')
     start_run_time = time.time()
 
-    while solver.ok:
+    while solver.proceed:
         solver.step(dt)
         if (solver.iteration-1) % 1 == 0:
             logger.info('Iteration: %i, Time: %e, dt: %e' %(solver.iteration, solver.sim_time, dt))
@@ -165,4 +157,4 @@ if rank == 0:
     if os.path.isfile(dir_path+"/scratch/integrals/integrals.h5"):
         os.remove(dir_path+"/scratch/integrals/integrals.h5")
 set_paths = list(pathlib.Path('scratch/integrals').glob("*.h5"))
-post.merge_sets('checkpoints/scratch/integrals/integrals.h5', set_paths)
+# post.merge_sets('checkpoints/scratch/integrals/integrals.h5', set_paths)
