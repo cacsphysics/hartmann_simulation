@@ -115,8 +115,8 @@ snap.add_task(v, name='velocity')
 # snap.add_task("vz", scales=1)
 
 integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200) #integrals used in the following examples: libration.py 
-integ.add_task(Avg_x(v), name='vx', scales=1)
-integ.add_task(Avg_x(a), name='A_x', scales=1)
+integ.add_task(d3.Average(v, 'x'), name='v_x', scales=1)
+integ.add_task(d3.Average(a, 'x'), name='A_x', scales=1)
 integ.add_task(d3.Average(v@ex, 'x'), name='vx_x', scales=1)
 integ.add_task(d3.Average(v@ey, 'x'), name='vy_x', scales=1)
 integ.add_task(d3.Average(v@ez, 'x'), name='vz_x', scales=1)
