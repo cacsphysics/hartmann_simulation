@@ -33,7 +33,7 @@ data_dir = "checkpoints"
 dealias = 3/2
 # domain, distributor, and base
 coords = d3.CartesianCoordinates('x', 'y','z')
-dist = d3.Distributor(coords, dtype=np.float64, mesh = mesh)
+dist = d3.Distributor(coords, dtype=np.float64)
 
 
 xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
@@ -60,8 +60,8 @@ Re = 1.
 Rm = 1.
 Pi = 1.
 tau = 0.1
-B = d3.curl(a)
-J = -d3.Laplacian(a)
+b = d3.curl(a)
+j = -d3.Laplacian(a)
 
 #Problem
 lift_basis = zbasis.derivative_basis(2)
@@ -75,9 +75,9 @@ grad_a = d3.grad(a) + ez*lift(tau_a1) # First-order reduction
 hartmann = d3.IVP([v, a, p, tau_p1, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals()) #19 unknowns
 
 hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form - div(v) = 0, incompressible
-hartmann.add_equation("dt(v)+ grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(J, B))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1)") # Navier Stokes
+hartmann.add_equation("dt(v)+ grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(j, b))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1)") # Navier Stokes
 # hartmann.add_equation("trace(grad_a) = 0") #coulomb gauge - add back tau_p2 if necessary
-hartmann.add_equation("dt(a) - div(grad_a)/Rm + lift(tau_a2) = cross(v, B)") # Az Induction Equation
+hartmann.add_equation("dt(a) - div(grad_a)/Rm + lift(tau_a2) = cross(v, b)") # Az Induction Equation
 
 # boundary conditions: nonslip at wall, pressure concentrated on the left
 hartmann.add_equation("v(z='left') = 0")
@@ -85,7 +85,7 @@ hartmann.add_equation("v(z='right') = 0") # , condition = "(nx != 0)"
 hartmann.add_equation("a(z = 'left') = 0")
 hartmann.add_equation("a(z = 'right') = 0")
 hartmann.add_equation("integ(p)= 0") # pressure gauge
-# hartmann.add_equation("p(z='right') = 0", condition = "(nx == 0)")
+# hartmann.add_equation("p(z='right') = 0") # , condition = "(nx == 0)"
 # 5 BCs, four are vectors
 
 # build solver
@@ -101,29 +101,34 @@ dt = 1e-3
 # Initial conditions are zero by default in all fields
 
 # Analysis
-analysis_tasks = []
-check = solver.evaluator.add_file_handler(os.path.join(data_dir,'checkpoints'), wall_dt=3540, max_writes=50)
-# check.add_system(solver.state)
-analysis_tasks.append(check)
+checkpoints = solver.evaluator.add_file_handler('checkpoints', wall_dt=3540, max_writes=50)
+checkpoints.add_tasks(solver.state)
 
 snap = solver.evaluator.add_file_handler('slices', sim_dt=1e-3, max_writes=200)
-snap.add_task(B, name='bfield')
+snap.add_task(b, name='bfield')
 snap.add_task(v, name='velocity')
-analysis_tasks.append(snap)
+# snap.add_task("Bx", scales=1)
+# snap.add_task("Bz", scales=1)
+# snap.add_task("Ay", scales=1)
+# snap.add_task("vx", scales=1)
+# snap.add_task("vy", scales=1)
+# snap.add_task("vz", scales=1)
 
-# integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200)
-# integ.add_task(Avg_x(v), name='vx', scales=1)
-# integ.add_task(Avg_x(A), name='A_x', scales=1)
-# analysis_tasks.append(integ)
+integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200) #integrals used in the following examples: libration.py 
+integ.add_task(Avg_x(v), name='vx', scales=1)
+integ.add_task(Avg_x(a), name='A_x', scales=1)
+integ.add_task(d3.Average(v@ex, 'x'), name='vx_x', scales=1)
+integ.add_task(d3.Average(v@ey, 'x'), name='vy_x', scales=1)
+integ.add_task(d3.Average(v@ez, 'x'), name='vz_x', scales=1)
+integ.add_task(d3.Average(b@ex, 'x'), name='Bx_x', scales=1)
+integ.add_task(d3.Average(b@ez, 'x'), name='Bz_x', scales=1)
 
 timeseries = solver.evaluator.add_file_handler('timeseries', sim_dt=1e-2)
 timeseries.add_task(0.5*d3.integ(v@v),name='Ekin')
-timeseries.add_task(0.5*d3.integ((B*ex)**2 + (B*ez)**2),name='Emag')
-analysis_tasks.append(timeseries)
+timeseries.add_task(0.5*d3.integ((b*ex)**2 + (b*ez)**2),name='Emag')
 
 # Flow properties
-# flow = flow_tools.GlobalFlowProperty(solver, cadence=1)
-flow = d3.GlobalFlowProperty(solver, cadence=10) # taken from convball.py
+flow = d3.GlobalFlowProperty(solver, cadence=1) # taken from convball.py
 flow.add_property(v@v/2, name='Ekin')
 
 try:
@@ -143,18 +148,3 @@ finally:
     logger.info('Iterations: %i' %solver.iteration)
     logger.info('Sim end time: %f' %solver.sim_time)
     logger.info('Run time: %f' %(end_run_time-start_run_time))
-
-
-logger.info('beginning join operation')
-for task in analysis_tasks:
-    logger.info(task.base_path)
-    post.merge_analysis(task.base_path)
-comm = MPI.COMM_WORLD
-rank = comm.Get_rank()
-if rank == 0:
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    print(dir_path)
-    if os.path.isfile(dir_path+"/scratch/integrals/integrals.h5"):
-        os.remove(dir_path+"/scratch/integrals/integrals.h5")
-set_paths = list(pathlib.Path('scratch/integrals').glob("*.h5"))
-# post.merge_sets('checkpoints/scratch/integrals/integrals.h5', set_paths)
