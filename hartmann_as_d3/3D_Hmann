@@ -24,16 +24,15 @@ Lx = 10.
 Ly = 2
 Lz = 1
 nx = 64
-ny = 64
+ny = 2 # quasi-2D for testing; normally 64
 nz = 64
 
-mesh = [8,8]
-stop_time = 0.2
-data_dir = "checkpoints"
+mesh = None #[8,8]
+stop_time = 10 # should go to 10, last Gary checked
 dealias = 3/2
 # domain, distributor, and base
 coords = d3.CartesianCoordinates('x', 'y','z')
-dist = d3.Distributor(coords, dtype=np.float64)
+dist = d3.Distributor(coords, dtype=np.float64, mesh = mesh)
 
 
 xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
@@ -44,10 +43,12 @@ zbasis = d3.ChebyshevT(coords['z'], size=nz, bounds=(-Lz, Lz), dealias=dealias) 
 v = dist.VectorField(coords, name='v', bases=(xbasis, ybasis, zbasis))
 a = dist.VectorField(coords, name='a', bases=(xbasis, ybasis, zbasis))
 p = dist.Field(name='p', bases=(xbasis, ybasis, zbasis))
+phi = dist.Field(name='phi', bases=(xbasis, ybasis, zbasis))
 t = dist.Field(name='t')
 
 ##### Taus
 tau_p1 = dist.Field(name='tau_p1')
+tau_phi1 = dist.Field(name='tau_phi1') 
 tau_v1 = dist.VectorField(coords, name='tau_v1', bases = (xbasis, ybasis))
 tau_v2 = dist.VectorField(coords, name='tau_v2', bases = (xbasis, ybasis))
 tau_a1 = dist.VectorField(coords, name='tau_a1', bases = (xbasis, ybasis))
@@ -55,16 +56,17 @@ tau_a2 = dist.VectorField(coords, name='tau_a2', bases = (xbasis, ybasis))
 
 #substitutions
 ex, ey, ez = coords.unit_vector_fields(dist)
-Ha = 20. # change this parameter
-Re = 1.
+Ha = 0.#20. # change this parameter; "ratio of flow to alfven speed times geom. mean of two reynolds numbers" - Mike
+Re = 1. #1 default for these 4
 Rm = 1.
 Pi = 1.
-tau = 0.1
-b = d3.curl(a)
+B0 = 1.
+tau = 0.05 #0.1 default
+b = d3.curl(a) + B0 * ez # Possibly caused high energy buildup. Jeff says this should be a valid method for intrinsic B field.
 j = -d3.Laplacian(a)
 
 #Problem
-lift_basis = zbasis.derivative_basis(2)
+lift_basis = zbasis.derivative_basis(1)
 lift = lambda A: d3.Lift(A, lift_basis, -1)
 grad_v = d3.grad(v) + ez*lift(tau_v1) # First-order reduction
 grad_a = d3.grad(a) + ez*lift(tau_a1) # First-order reduction
@@ -72,24 +74,25 @@ grad_a = d3.grad(a) + ez*lift(tau_a1) # First-order reduction
 # First-order form: "div(f)" becomes "trace(grad_f)"
 # First-order form: "lap(f)" becomes "div(grad_f)"
 # variables and parameters
-hartmann = d3.IVP([v, a, p, tau_p1, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals()) #19 unknowns
+hartmann = d3.IVP([v, a, p, phi, tau_p1, tau_phi1, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals())
 
 hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form - div(v) = 0, incompressible
-hartmann.add_equation("dt(v)+ grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(j, b))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1)") # Navier Stokes
-# hartmann.add_equation("trace(grad_a) = 0") #coulomb gauge - add back tau_p2 if necessary
-hartmann.add_equation("dt(a) - div(grad_a)/Rm + lift(tau_a2) = cross(v, b)") # Az Induction Equation
+hartmann.add_equation("dt(v) + grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(j, b))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1)") # Navier Stokes
+hartmann.add_equation("dt(a) + grad(phi) - div(grad_a)/Rm + lift(tau_a2) = cross(v, b)") # A Induction Equation
+hartmann.add_equation("trace(grad_a) + tau_phi1 = 0")
 
 # boundary conditions: nonslip at wall, pressure concentrated on the left
 hartmann.add_equation("v(z='left') = 0")
-hartmann.add_equation("v(z='right') = 0") # , condition = "(nx != 0)"
+hartmann.add_equation("v(z='right') = 0")
 hartmann.add_equation("a(z = 'left') = 0")
 hartmann.add_equation("a(z = 'right') = 0")
 hartmann.add_equation("integ(p)= 0") # pressure gauge
-# hartmann.add_equation("p(z='right') = 0") # , condition = "(nx == 0)"
+hartmann.add_equation("integ(phi) = 0") # coulomb gauge condition
+
 # 5 BCs, four are vectors
 
 # build solver
-solver = hartmann.build_solver(d3.MCNAB2)
+solver = hartmann.build_solver(d3.RK222)
 logger.info("Solver built")
 
 # Integration parameters
@@ -117,11 +120,6 @@ snap.add_task(v, name='velocity')
 integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200) #integrals used in the following examples: libration.py 
 integ.add_task(d3.Average(v, 'x'), name='v_x', scales=1)
 integ.add_task(d3.Average(a, 'x'), name='A_x', scales=1)
-integ.add_task(d3.Average(v@ex, 'x'), name='vx_x', scales=1)
-integ.add_task(d3.Average(v@ey, 'x'), name='vy_x', scales=1)
-integ.add_task(d3.Average(v@ez, 'x'), name='vz_x', scales=1)
-integ.add_task(d3.Average(b@ex, 'x'), name='Bx_x', scales=1)
-integ.add_task(d3.Average(b@ez, 'x'), name='Bz_x', scales=1)
 
 timeseries = solver.evaluator.add_file_handler('timeseries', sim_dt=1e-2)
 timeseries.add_task(0.5*d3.integ(v@v),name='Ekin')
@@ -133,7 +131,6 @@ flow.add_property(v@v/2, name='Ekin')
 
 try:
     logger.info('Starting loop')
-    start_run_time = time.time()
 
     while solver.proceed:
         solver.step(dt)
@@ -144,7 +141,4 @@ except:
     logger.error('Exception raised, triggering end of main loop.')
     raise
 finally:
-    end_run_time = time.time()
-    logger.info('Iterations: %i' %solver.iteration)
-    logger.info('Sim end time: %f' %solver.sim_time)
-    logger.info('Run time: %f' %(end_run_time-start_run_time))
+    solver.log_stats()
