@@ -24,7 +24,7 @@ Lx = 10
 Ly = 2
 Lz = 1
 nx = 64
-ny = 2 # quasi-2D for testing - 2 or so; normally 64
+ny = 64 # quasi-2D for testing - 2 or so; normally 64
 nz = 64
 
 mesh = None #[8,8]
@@ -61,7 +61,7 @@ ex, ey, ez = coords.unit_vector_fields(dist)
 dx = lambda C: d3.Differentiate(C, coords['x'])
 dy = lambda C: d3.Differentiate(C, coords['y'])
 dz = lambda C: d3.Differentiate(C, coords['z'])
-Ha = 0 #20. for MHD. 0 gives regular hydrodynamics. change this parameter; "ratio of flow to alfven speed times geom. mean of two reynolds numbers" - Mike
+Ha = 20 #20. for MHD. 0 gives regular hydrodynamics. change this parameter; "ratio of flow to alfven speed times geom. mean of two reynolds numbers" - Mike
 Re = 1. #1 default for these 4
 Rm = 1.
 Pi = 1.
@@ -82,7 +82,7 @@ grad_a = d3.grad(a) + ez*lift(tau_a1) # First-order reduction
 hartmann = d3.IVP([v, a, p, phi, tau_p1, tau_phi1, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals())
 
 hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form - div(v) = 0, incompressible
-hartmann.add_equation("dt(v) + grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(j, b))/(Re*Rm) - Pi*(np.exp(-t/tau)*ex -1)") # Navier Stokes
+hartmann.add_equation("dt(v) + grad(p) - div(grad_v)/Re + lift(tau_v2) = -v@grad(v) - ((Ha**2)*cross(j, b))/(Re*Rm) - Pi*ex*(np.exp(-t/tau) - 1)") # Navier Stokes
 hartmann.add_equation("dt(a) + grad(phi) - div(grad_a)/Rm + lift(tau_a2) = cross(v, b)") # A Induction Equation
 hartmann.add_equation("trace(grad_a) + tau_phi1 = 0")
 #adding Ax = Az = 0 enforcing equations + BCs; didn't seem to work
@@ -99,6 +99,8 @@ hartmann.add_equation("integ(phi) = 0") # coulomb gauge condition - phi is just 
 # hartmann.add_equation("integ(a@ex) = 0")
 # hartmann.add_equation("integ(a@ez) = 0")
 # hartmann.add_equation("b(z='left')@ey = 0") #two lines that attempted to solve the no By aka no Ax or Az problem
+
+# As of now, I can't think of any solutions besides finding some way to enforce Ax = Az = 0, which as mentioned above has been as of yet unsuccessful.
 
 
 # 5 BCs, four are vectors
@@ -137,6 +139,12 @@ timeseries = solver.evaluator.add_file_handler('timeseries', sim_dt=1e-2)
 timeseries.add_task(0.5*d3.integ(v@v),name='Ekin')
 timeseries.add_task(0.5*d3.integ(b@b),name='Emag') # (b@ex)**2 + (b@ez)**2 or b@b?
 
+# CFL - commenting out likely ~doubles efficiency if you need it.
+CFL = d3.CFL(solver, initial_dt=dt, cadence=1, safety=0.3, threshold=0.05,
+             max_change=1.5, min_change=0.05, max_dt=dt)
+CFL.add_velocity(v)
+CFL.add_velocity(b)
+
 # Flow properties
 flow = d3.GlobalFlowProperty(solver, cadence=1) # taken from convball.py
 flow.add_property(v@v/2, name='Ekin')
@@ -145,6 +153,7 @@ try:
     logger.info('Starting loop')
 
     while solver.proceed:
+        dt = CFL.compute_timestep()
         solver.step(dt)
         if (solver.iteration-1) % 1 == 0:
             logger.info('Iteration: %i, Time: %e, dt: %e' %(solver.iteration, solver.sim_time, dt))
