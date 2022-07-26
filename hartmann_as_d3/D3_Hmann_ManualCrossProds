@@ -1,0 +1,169 @@
+"""2D Hartmann flow example
+Uses vector potential form of MHD; incompressible Navier-Stokes, no further approximations.
+Edits to get a Dedalus3 version made by Carlos and Alex.
+
+reference paper or document needed
+"""
+import os
+import sys
+import numpy as np
+import pathlib
+import h5py
+import time
+import dedalus.public as d3
+from dedalus.extras import flow_tools
+from dedalus.tools import post
+from mpi4py import MPI
+
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+Lx = 10
+Ly = 2
+Lz = 1
+nx = 64
+ny = 2 # quasi-2D for testing - 2 or so; normally 64
+nz = 64
+
+mesh = None #[8,8]
+stop_time = 1 # should go to 10, last Gary checked, can use ~1 for testing
+dealias = 3/2
+# domain, distributor, and base
+coords = d3.CartesianCoordinates('x', 'y','z')
+dist = d3.Distributor(coords, dtype=np.float64, mesh = mesh)
+
+xbasis = d3.RealFourier(coords['x'], size=nx, bounds=(0, Lx), dealias=dealias)
+ybasis = d3.RealFourier(coords['y'], size=ny, bounds=(-Ly, Ly), dealias=dealias) # y and z were previously from -Ly/Lz to +Ly/Lz. Can change between that and 0 to L# if you feel it might affect things
+zbasis = d3.ChebyshevT(coords['z'], size=nz, bounds=(-Lz, Lz), dealias=dealias) # the coupled dimension
+
+# Fields (D3 Update)
+v = dist.VectorField(coords, name='v', bases=(xbasis, ybasis, zbasis))
+a = dist.VectorField(coords, name='a', bases=(xbasis, ybasis, zbasis))
+# b = dist.VectorField(coords, name='v', bases=(xbasis, ybasis, zbasis))
+p = dist.Field(name='p', bases=(xbasis, ybasis, zbasis))
+phi = dist.Field(name='phi', bases=(xbasis, ybasis, zbasis))
+t = dist.Field(name='t')
+
+##### Taus
+tau_p1 = dist.Field(name='tau_p1')
+tau_phi1 = dist.Field(name='tau_phi1') 
+tau_v1 = dist.VectorField(coords, name='tau_v1', bases = (xbasis, ybasis))
+tau_v2 = dist.VectorField(coords, name='tau_v2', bases = (xbasis, ybasis))
+tau_a1 = dist.VectorField(coords, name='tau_a1', bases = (xbasis, ybasis))
+tau_a2 = dist.VectorField(coords, name='tau_a2', bases = (xbasis, ybasis))
+# tau_x1 = dist.Field(name='tau_x1')
+# tau_x2 = dist.Field(name='tau_x2')
+
+#substitutions
+ex, ey, ez = coords.unit_vector_fields(dist)
+dx = lambda C: d3.Differentiate(C, coords['x'])
+dy = lambda C: d3.Differentiate(C, coords['y'])
+dz = lambda C: d3.Differentiate(C, coords['z'])
+Ha = 0 #20. for MHD. 0 gives regular hydrodynamics. change this parameter; "ratio of flow to alfven speed times geom. mean of two reynolds numbers" - Mike
+Re = 1. #1 default for these 4
+Rm = 1.
+Pi = 1.
+B0 = 1
+tau = 0.1 #0.1 default, 0.05 speeds up forcing
+B1 = d3.curl(a) # Possibly caused high energy buildup. Jeff says this should be a valid method for intrinsic B field.
+b = B1 + B0*ez
+j = -d3.Laplacian(a)
+vx = v@ex
+vy = v@ey
+vz = v@ez
+Bx = B1@ex
+By = B1@ey
+Bz = B1@ez
+Jx = j@ex
+Jy = j@ey
+Jz = j@ez
+
+#Problem
+lift_basis = zbasis.derivative_basis(1)
+lift = lambda A: d3.Lift(A, lift_basis, -1)
+grad_v = d3.grad(v) + ez*lift(tau_v1) # First-order reduction
+grad_a = d3.grad(a) + ez*lift(tau_a1) # First-order reduction
+
+# First-order form: "div(f)" becomes "trace(grad_f)"
+# First-order form: "lap(f)" becomes "div(grad_f)"
+# variables and parameters
+hartmann = d3.IVP([v, a, p, phi, tau_p1, tau_phi1, tau_v1, tau_v2, tau_a1, tau_a2], time=t, namespace=locals())
+
+hartmann.add_equation("trace(grad_v) + tau_p1 = 0") #first order form - div(v) = 0, incompressible
+
+hartmann.add_equation("dt(v) + grad(p) - div(grad_v)/Re + lift(tau_v2) + ((Ha**2)*(Jy*B0*ex - Jx*B0*ey))/(Re*Rm)= -v@grad(v) - ((Ha**2)*(Jy*Bz*ex - Jz*By*ex + Jz*Bx*ey - Jx*Bz*ey + Jx*By*ez - Jy*Bx*ez))/(Re*Rm) - ex*Pi*(np.exp(-t/tau) - 1)") # Navier Stokes
+
+hartmann.add_equation("dt(a) + grad(phi) - div(grad_a)/Rm + lift(tau_a2) - vy*B0*ex + vx*B0*ey = vy*Bz*ex - vz*By*ex + vz*Bx*ey - vx*Bz*ey + vx*By*ez - vy*Bx*ez") # A Induction Equation
+hartmann.add_equation("trace(grad_a) + tau_phi1 = 0")
+#adding Ax = Az = 0 enforcing equations + BCs; didn't seem to work
+# hartmann.add_equation("dy(a@ex) + tau_x1 = 0")
+# hartmann.add_equation("dy(a@ez) + tau_x2 = 0")
+#u, v, w velocity components
+
+# boundary conditions: nonslip at wall, pressure concentrated on the left
+hartmann.add_equation("v(z='left') = 0")
+hartmann.add_equation("v(z='right') = 0")
+hartmann.add_equation("a(z = 'left') = 0")
+hartmann.add_equation("a(z = 'right') = 0")
+hartmann.add_equation("integ(p)= 0") # pressure gauge
+hartmann.add_equation("integ(phi) = 0") # coulomb gauge condition - phi is just electrostatic potential, so Jeff added that to allow us to add this relation back in
+# hartmann.add_equation("integ(a@ex) = 0")
+# hartmann.add_equation("integ(a@ez) = 0")
+# hartmann.add_equation("b(z='left')@ey = 0") #two lines that attempted to solve the no By aka no Ax or Az problem
+
+
+# 5 BCs, four are vectors
+
+# build solver
+solver = hartmann.build_solver(d3.RK222)
+logger.info("Solver built")
+
+# Integration parameters
+solver.stop_sim_time = stop_time
+solver.stop_wall_time = 5*24*60.*60
+solver.stop_iteration = np.inf
+dt = 1e-3
+
+# Initial conditions are zero by default in all fields
+
+# Analysis
+checkpoints = solver.evaluator.add_file_handler('checkpoints', wall_dt=3540, max_writes=50)
+checkpoints.add_tasks(solver.state)
+
+snap = solver.evaluator.add_file_handler('slices', sim_dt=1e-3, max_writes=200)
+snap.add_task(b, name='bfield')
+snap.add_task(v, name='velocity')
+# snap.add_task("Bx", scales=1)
+# snap.add_task("Bz", scales=1)
+# snap.add_task("Ay", scales=1)
+# snap.add_task("vx", scales=1)
+# snap.add_task("vy", scales=1)
+# snap.add_task("vz", scales=1)
+
+integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200) #integrals used in the following examples: libration.py 
+integ.add_task(d3.Average(v, 'x'), name='v_x', scales=1)
+integ.add_task(d3.Average(a, 'x'), name='A_x', scales=1)
+
+timeseries = solver.evaluator.add_file_handler('timeseries', sim_dt=1e-2)
+timeseries.add_task(0.5*d3.integ(v@v),name='Ekin')
+timeseries.add_task(0.5*d3.integ(b@b),name='Emag') # (b@ex)**2 + (b@ez)**2 or b@b?
+
+# Flow properties
+flow = d3.GlobalFlowProperty(solver, cadence=1) # taken from convball.py
+flow.add_property(v@v/2, name='Ekin')
+
+try:
+    logger.info('Starting loop')
+
+    while solver.proceed:
+        solver.step(dt)
+        if (solver.iteration-1) % 1 == 0:
+            logger.info('Iteration: %i, Time: %e, dt: %e' %(solver.iteration, solver.sim_time, dt))
+            logger.info('Max E_kin = %17.12e' %flow.max('Ekin'))
+except:
+    logger.error('Exception raised, triggering end of main loop.')
+    raise
+finally:
+    solver.log_stats()
