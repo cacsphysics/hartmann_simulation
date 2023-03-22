@@ -48,7 +48,7 @@ t = dist.Field(name='t')
 
 ##### Taus
 tau_p1 = dist.Field(name='tau_p1')
-tau_phi1 = dist.Field(name='tau_phi1') 
+tau_phi1 = dist.Field(name='tau_phi1')
 tau_v1 = dist.VectorField(coords, name='tau_v1', bases = (xbasis, ybasis))
 tau_v2 = dist.VectorField(coords, name='tau_v2', bases = (xbasis, ybasis))
 tau_a1 = dist.VectorField(coords, name='tau_a1', bases = (xbasis, ybasis))
@@ -131,7 +131,7 @@ snap.add_task(v, name='velocity')
 # snap.add_task("vy", scales=1)
 # snap.add_task("vz", scales=1)
 
-integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200) #integrals used in the following examples: libration.py 
+integ = solver.evaluator.add_file_handler('integrals', sim_dt=1e-3, max_writes=200) #integrals used in the following examples: libration.py
 integ.add_task(d3.Average(v, 'x'), name='v_x', scales=1)
 integ.add_task(d3.Average(a, 'x'), name='A_x', scales=1)
 
@@ -162,4 +162,4 @@ except:
     logger.error('Exception raised, triggering end of main loop.')
     raise
 finally:
-    solver.log_stats()
+    solver.log_stats()(base) 
